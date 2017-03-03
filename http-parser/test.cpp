@@ -7,184 +7,115 @@
 #include <sstream>
 
 
-typedef std::map<std::string, std::string> header_t;
-typedef header_t::iterator header_iter_t;
 
-struct HttpRequest {
-	std::string http_method;
-	std::string http_url;
-	//std::string http_version;
-
-	header_t    http_headers;
-	std::string http_header_field; //field is waiting for value while parsing
-
-	std::string http_body;
-
-};
-
-
-struct HttpResponse {
-	//std::string http_version;
-	int         http_code;
-	std::string http_phrase;
-
-	header_t    http_headers;
-
-	std::string http_body;
-
-	std::string GetResponse();
-	void        ResetResponse();
-};
-
-std::string HttpResponse::GetResponse()
-{
-	std::ostringstream ostream;
-	ostream << "HTTP/1.1" << " " << http_code << " " << http_phrase << "\r\n"
-		<< "Connection: keep-alive" << "\r\n";
-
-	header_iter_t iter = http_headers.begin();
-
-	while (iter != http_headers.end())
-	{
-		ostream << iter->first << ": " << iter->second << "\r\n";
-		++iter;
-	}
-	ostream << "Content-Length: " << http_body.size() << "\r\n\r\n";
-	ostream << http_body;
-
-	return ostream.str();
-}
-
-void HttpResponse::ResetResponse()
-{
-	//http_version = "HTTP/1.1";
-	http_code = 200;
-	http_phrase = "OK";
-
-	http_body.clear();
-	http_headers.clear();
-}
-
-class HttpParser
-{
+class Result{
 public:
-	void InitParser(Connection *con);
-	int  HttpParseRequest(const std::string &inbuf);
+	std::vector<std::string> header_field;
+	std::vector<std::string> header_value;
+	std::string url;
+	std::string status;
+	std::string body;
+};
 
-	static int OnMessageBeginCallback(http_parser *parser);
-	static int OnUrlCallback(http_parser *parser, const char *at, size_t length);
-	static int OnHeaderFieldCallback(http_parser *parser, const char *at, size_t length);
-	static int OnHeaderValueCallback(http_parser *parser, const char *at, size_t length);
-	static int OnHeadersCompleteCallback(http_parser *parser);
-	static int OnBodyCallback(http_parser *parser, const char *at, size_t length);
-	static int OnMessageCompleteCallback(http_parser *parser);
-
+class HTTP_PARSER {
+public:
+	HTTP_PARSER(const char* buf):
+		buf_(buf)
+	{
+		settings_.on_message_begin = HTTP_PARSER::OnMessageBeginCallback;
+		settings_.on_url = HTTP_PARSER::OnURLCallback;
+		settings_.on_status = HTTP_PARSER::OnStatusCallback;
+		settings_.on_header_field = HTTP_PARSER::OnHeaderFieldCallback;
+		settings_.on_header_value = HTTP_PARSER::OnHeaderValueCallback;
+		settings_.on_headers_complete = HTTP_PARSER::OnHeadersCompleteCallback;
+		settings_.on_body = HTTP_PARSER::OnBodyCallback;
+		settings_.on_message_complete = HTTP_PARSER::OnMessageComplete;
+		settings_.on_chunk_header = HTTP_PARSER::OnChunkHeaderCallback;
+		settings_.on_chunk_complete = HTTP_PARSER::OnChunkCompleteCallback;
+	}
+	~HTTP_PARSER() {}
+	void Init() {
+		http_parser_init(&parser_, HTTP_REQUEST);
+	}
+	void RunParser() {
+		http_parser_execute(&parser_, &settings_, buf_.c_str(), buf_.length());
+	}
 private:
-	http_parser          parser;
-	http_parser_settings settings;
-};
-
-class Connection {
-public:
-	Connection(){}
-	~Connection(){}
-
-	HttpRequest        *http_request_parser;    //解析时用
-	HttpRequest        *http_request_process;   //处理请求时用
-	HttpResponse        http_response;
-	HttpParser          http_parser;
-	std::vector<HttpRequest> req_queue;
-};
-
-int HttpParser::HttpParseRequest(const std::string &inbuf)
-{
-	int nparsed = http_parser_execute(&parser, &settings, inbuf.c_str(), inbuf.size());
-
-	if (parser.http_errno != HPE_OK)
-	{
-		return -1;
+	static int OnMessageBeginCallback(http_parser* parser) {
+		std::cout << "Start parse message" << std::endl;
+		parser->data = new Result();
+		return 0;
+	}
+	static int OnURLCallback(http_parser* parser, const char* at, size_t length) {
+		Result * resultData = (Result*)parser->data;
+		resultData->url.assign(at, length);
+		return 0;
+	}
+	static int OnStatusCallback(http_parser* parser, const char* at, size_t length) {
+		Result * resultData = (Result*)parser->data;
+		resultData->status.assign(at, length);
+		return 0;
+	}
+	static int OnHeaderFieldCallback(http_parser* parser, const char* at, size_t length) {
+		Result * resultData = (Result*)parser->data;
+		std::string field;
+		field.assign(at, length);
+		resultData->header_field.push_back(field);
+		return 0;
+	}
+	static int OnHeaderValueCallback(http_parser* parser, const char* at, size_t length) {
+		Result * resultData = (Result*)parser->data;
+		std::string value;
+		value.assign(at, length);
+		resultData->header_value.push_back(value);
+		return 0;
+	}
+	static int OnHeadersCompleteCallback(http_parser* parser) {
+		std::cout << "parse header complete." << std::endl;
+		return 0;
+	}
+	static int OnBodyCallback(http_parser* parser, const char* at, size_t length) {
+		std::cout << "parse body begin." << std::endl;
+		Result * resultData = (Result*)parser->data;
+		resultData->body.assign(at, length);
+		std::cout << "Parse body complete" << std::endl;
+		return 0;
+	}
+	static int OnMessageComplete(http_parser* parser) {
+		std::cout << "parse message complete." << std::endl;
+		return 0;
+	}
+	static int OnChunkHeaderCallback(http_parser* parser){
+		return 0;
+	}
+	static int OnChunkCompleteCallback(http_parser* parser) {
+		return 0;
 	}
 
-	return nparsed;
-}
-
-/* 初始化http_request_parser */
-int HttpParser::OnMessageBeginCallback(http_parser *parser)
-{
-	Connection *con = (Connection*)parser->data;
-
-	con->http_request_parser = new HttpRequest();
-
-	return 0;
-}
-
-/* 将解析好的url赋值给http_url */
-int HttpParser::OnUrlCallback(http_parser *parser, const char *at, size_t length)
-{
-	Connection *con = (Connection*)parser->data;
-
-	con->http_request_parser->http_url.assign(at, length);
-
-	return 0;
-}
-
-/* 将解析到的header_field暂存在http_header_field中 */
-int HttpParser::OnHeaderFieldCallback(http_parser *parser, const char *at, size_t length)
-{
-	Connection *con = (Connection*)parser->data;
-
-	con->http_request_parser->http_header_field.assign(at, length);
-
-	return 0;
-}
-
-/* 将解析到的header_value跟header_field一一对应 */
-int HttpParser::OnHeaderValueCallback(http_parser *parser, const char *at, size_t length)
-{
-	Connection      *con = (Connection*)parser->data;
-	HttpRequest *request = con->http_request_parser;
-
-	request->http_headers[request->http_header_field] = std::string(at, length);
-
-	return 0;
-}
-
-/* 参照官方文档 */
-int HttpParser::OnHeadersCompleteCallback(http_parser *parser)
-{
-	Connection *con = (Connection*)parser->data;
-	HttpRequest *request = con->http_request_parser;
-	request->http_method = http_method_str((http_method)parser->method);
-	return 0;
-}
-
-/* 本函数可能被调用不止一次，因此使用append */
-int HttpParser::OnBodyCallback(http_parser *parser, const char *at, size_t length)
-{
-	Connection *con = (Connection*)parser->data;
-
-	con->http_request_parser->http_body.append(at, length);
-
-	return 0;
-}
-
-/* 将解析完毕的消息放到消息队列中 */
-int HttpParser::OnMessageCompleteCallback(http_parser *parser)
-{
-	Connection *con = (Connection*)parser->data;
-	HttpRequest *request = con->http_request_parser;
-
-	con->req_queue.push_back(*request);
-	con->http_request_parser = NULL;
-	return 0;
-}
+	std::string					buf_;
+	http_parser_settings		settings_;
+public:
+	http_parser					parser_;
+};
 
 int main() {
 
-	http_parser_settings settings;
-	
-	http_parser parser;
+	const char * buf = "GET /get_funky_content_length_body_hello HTTP/1.0\r\n"
+		"conTENT-Length: 5\r\n"
+		"\r\n"
+		"HELLO";
+	HTTP_PARSER parser(buf);
+	parser.Init();
+	parser.RunParser();
 
+	Result* result = (Result*)parser.parser_.data;
+	for (auto& field : result->header_field) {
+		std::cout << "field : " << field << " " << std::endl;
+	}
+	for (auto& value : result->header_value) {
+		std::cout << "value : " << value << " " << std::endl;
+	}
 
+	std::cout << "body : " << result->body << std::endl;
 	return 0;
 }
